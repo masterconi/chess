@@ -1,25 +1,22 @@
+// chess_client.c
+// Compile with: gcc chess_client.c -o chess_client -lSDL2 -lSDL2_ttf -lSDL2_image
+
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <SDL2/SDL_image.h>
-
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
 
 #define BOARD_SIZE 8
-#define SQUARE_SIZE 80
+#define SQUARE_SIZE 100
 
 SDL_Window* window = NULL;
 SDL_Renderer* renderer = NULL;
 
-int board[BOARD_SIZE][BOARD_SIZE] = {
-    {2, 4, 3, 5, 6, 3, 4, 2},
-    {1, 1, 1, 1, 1, 1, 1, 1},
-    {0, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 0, 0, 0},
-    {1, 1, 1, 1, 1, 1, 1, 1},
-    {2, 4, 3, 5, 6, 3, 4, 2}
-};
+int board[BOARD_SIZE][BOARD_SIZE];
 
 char* whitePieceImages[] = {
     "chess_pieces/white_pawn.png",
@@ -43,16 +40,64 @@ int selectedPiece[2] = {-1, -1}; // Coordinates of the selected piece
 int offset[2] = {0, 0}; // Offset for the selected piece's position relative to the mouse
 
 void renderPieces();
-void handleEvents();
-void movePiece(int fromX, int fromY, int toX, int toY);
+void handleEvents(int serverSocket);
+void receiveBoardState(int serverSocket);
 
 int main() {
-    if (!initializeSDL()) {
+    int serverSocket;
+    struct sockaddr_in serverAddr;
+
+    // Create socket
+    if ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("Socket creation error");
         return 1;
     }
 
+    // Configure server address
+    memset(&serverAddr, '0', sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(12345);
+
+    // Convert IPv4 and IPv6 addresses from text to binary form
+    if (inet_pton(AF_INET, "127.0.0.1", &serverAddr.sin_addr) <= 0) {
+        perror("Invalid address/ Address not supported");
+        return 1;
+    }
+
+    // Connect to the server
+    if (connect(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        perror("Connection Failed");
+        return 1;
+    }
+
+    // Initialize SDL
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        printf("SDL initialization failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    window = SDL_CreateWindow("Chess Client", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, BOARD_SIZE * SQUARE_SIZE, BOARD_SIZE * SQUARE_SIZE, SDL_WINDOW_SHOWN);
+    if (window == NULL) {
+        printf("Window creation failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (renderer == NULL) {
+        printf("Renderer creation failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    if (IMG_Init(IMG_INIT_PNG) != IMG_INIT_PNG) {
+        printf("SDL_image initialization failed: %s\n", IMG_GetError());
+        return 1;
+    }
+
+    // Initial board state
+    receiveBoardState(serverSocket);
+
     while (1) {
-        handleEvents();
+        handleEvents(serverSocket);
         renderPieces();
         SDL_Delay(100);
     }
@@ -61,36 +106,20 @@ int main() {
     SDL_DestroyWindow(window);
     SDL_Quit();
 
+    close(serverSocket);
+
     return 0;
 }
 
-int initializeSDL() {
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        printf("SDL initialization failed: %s\n", SDL_GetError());
-        return 0;
+void receiveBoardState(int serverSocket) {
+    // Receive initial board state from the server
+    if (recv(serverSocket, board, sizeof(board), 0) < 0) {
+        perror("Receive failed");
+        exit(1);
     }
-
-    window = SDL_CreateWindow("Chess", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, BOARD_SIZE * SQUARE_SIZE, BOARD_SIZE * SQUARE_SIZE, SDL_WINDOW_SHOWN);
-    if (window == NULL) {
-        printf("Window creation failed: %s\n", SDL_GetError());
-        return 0;
-    }
-
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (renderer == NULL) {
-        printf("Renderer creation failed: %s\n", SDL_GetError());
-        return 0;
-    }
-
-    if (IMG_Init(IMG_INIT_PNG) != IMG_INIT_PNG) {
-        printf("SDL_image initialization failed: %s\n", IMG_GetError());
-        return 0;
-    }
-
-    return 1;
 }
 
-void handleEvents() {
+void handleEvents(int serverSocket) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
@@ -114,8 +143,11 @@ void handleEvents() {
                 }
             } else {
                 // A piece is already selected, try to move it to the clicked square
-                movePiece(selectedPiece[0], selectedPiece[1], boardX, boardY);
-                // Reset the selected piece coordinates
+                int move[4] = {selectedPiece[0], selectedPiece[1], boardX, boardY};
+                if (send(serverSocket, move, sizeof(move), 0) < 0) {
+                    perror("Send failed");
+                    exit(1);
+                }
                 selectedPiece[0] = -1;
                 selectedPiece[1] = -1;
             }
@@ -127,20 +159,10 @@ void handleEvents() {
             selectedPiece[0] = (mouseX - offset[0]) / SQUARE_SIZE;
             selectedPiece[1] = (mouseY - offset[1]) / SQUARE_SIZE;
         }
-        // Add additional event handling code based on your requirements
     }
 }
 
-void movePiece(int fromX, int fromY, int toX, int toY) {
-    // Add logic for checking if the move is valid and update the board accordingly
-    // For now, we'll simply swap the pieces
-    int temp = board[toY][toX];
-    board[toY][toX] = board[fromY][fromX];
-    board[fromY][fromX] = temp;
-}
-
 void renderPieces() {
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
     SDL_RenderClear(renderer);
 
     for (int row = 0; row < BOARD_SIZE; ++row) {
@@ -156,7 +178,14 @@ void renderPieces() {
 
             int piece = board[row][col];
             if (piece != 0) {
-                char* pieceImage = (piece < 7) ? whitePieceImages[piece - 1] : blackPieceImages[piece - 7];
+                char* pieceImage;
+
+                if (piece < 7) {
+                    pieceImage = whitePieceImages[piece - 1];
+                } else {
+                    // Adjust the index for black pieces
+                    pieceImage = blackPieceImages[piece - 7];
+                }
 
                 // Load and render piece image
                 SDL_Surface* pieceSurface = IMG_Load(pieceImage);
@@ -175,13 +204,6 @@ void renderPieces() {
                 SDL_DestroyTexture(pieceTexture);
             }
         }
-    }
-
-    // Highlight the selected piece
-    if (selectedPiece[0] != -1) {
-        SDL_Rect highlightRect = {selectedPiece[0] * SQUARE_SIZE, selectedPiece[1] * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE};
-        SDL_SetRenderDrawColor(renderer, 0, 255, 0, 128);
-        SDL_RenderFillRect(renderer, &highlightRect);
     }
 
     SDL_RenderPresent(renderer);
