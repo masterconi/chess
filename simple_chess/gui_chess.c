@@ -5,7 +5,7 @@
 
 
 #define BOARD_SIZE 8
-#define SQUARE_SIZE 80
+#define SQUARE_SIZE 100
 
 SDL_Window* window = NULL;
 SDL_Renderer* renderer = NULL;
